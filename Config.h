@@ -27,4 +27,7 @@ const char* G_Event_BlockOutClear = "55.BB.00.11.22.33.00.09";
 const char* G_Event_BlockInOccupied = "55.BB.00.11.22.33.00.10";
 const char* G_Event_BlockInClear = "55.BB.00.11.22.33.00.11";
 const char* G_Event_ActualBlockEntered = "02.01.57.11.00.CA.00.2D";
+const char* G_Event_DistSigAspectStop = "55.BB.00.11.22.33.00.12";
+const char* G_Event_DistSigAspectClear1 = "55.BB.00.11.22.33.00.13";
+const char* G_Event_DistSigAspectClear2 = "55.BB.00.11.22.33.00.14";
 const char* G_LCC_SourceAlias = "5b2";
