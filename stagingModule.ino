@@ -1,6 +1,7 @@
 #include "Config.h"
 #include "Timer.h"
 #include "Event.h"
+#include "Display.h"
 
 #include <WiFi.h>
 
@@ -29,6 +30,9 @@ ConsumedEvent outSignalStopEvent(G_Event_OutSignalStop);
 ConsumedEvent inSignalClearEvent(G_Event_InSignalClear);
 ConsumedEvent inSignalStopEvent(G_Event_InSignalStop);
 ConsumedEvent physicalBlockEnteredEvent(G_Event_ActualBlockEntered);
+ConsumedEvent distantAspectStopEvent(G_Event_DistSigAspectStop);
+ConsumedEvent distantAspectClear1Event(G_Event_DistSigAspectClear1);
+ConsumedEvent distantAspectClear2Event(G_Event_DistSigAspectClear2);
 
 TransitState currentState = TS_idle;
 
@@ -61,12 +65,18 @@ Timer* allTimers[] =
   &timerInboundTransitMain, &timerInboundEnterSwitch, &timerInboundExitMain, &timerInboundEnterInBlock, &timerInboundExitSwitch,
   &timerInboundExitInBlock
 };
-int numTimers = 13; //sizeof(allTimers); //13
+int numTimers = 13;
+
+// Display
+Display display;
+DistantAspect distantAspect = DA_Caution;
 
 WiFiClient client;
 
 void setup() 
 {
+  display.Init();
+
   Serial.begin(115200);
   
   // Establish WiFi connection
@@ -96,6 +106,8 @@ void setup()
   producedEvents[PE_switchBlockClear].Init(G_Event_BlockSwitchClear, G_LCC_SourceAlias);
   producedEvents[PE_mainBlockOccupied].Init(G_Event_BlockMainOccupied, G_LCC_SourceAlias);
   producedEvents[PE_mainBlockClear].Init(G_Event_BlockMainClear, G_LCC_SourceAlias);
+
+  display.DrawStopSign();
 }
 
 void initTimers()
@@ -153,8 +165,8 @@ void clientRead()
   if (client.available()) 
   {
     String data = client.readStringUntil('\r');
-    Serial.print("Reading network data: ");
-    Serial.println(data);
+    //Serial.print("Reading network data: ");
+    //Serial.println(data);
 
     if (outSignalClearEvent.IsInMessage(data))
     {
@@ -176,6 +188,18 @@ void clientRead()
     {
       onTrainDeparted();
     }
+    else if (distantAspectStopEvent.IsInMessage(data))
+    {
+      updateDistantAspect(DA_Caution);
+    }
+    else if (distantAspectClear1Event.IsInMessage(data))
+    {
+      updateDistantAspect(DA_Clear1);
+    }
+    else if (distantAspectClear2Event.IsInMessage(data))
+    {
+      updateDistantAspect(DA_Clear2);
+    }
   }
 }
 
@@ -192,6 +216,47 @@ void simulate(int ms)
   {
     allTimers[i]->Update(seconds);
   }
+
+  // Show outbound timer on display
+  if (currentState == TS_departing)
+  {
+    if (timerOutboundTransitMain.Completed())
+    {
+      display.DrawTimerText("GO");
+    }
+    else if (timerOutboundTransitMain.IsRunning())
+    {
+      int timeInt = ceil(timerOutboundTransitMain.Get());
+      display.DrawTimer(timeInt);
+    }
+    else
+    {
+      display.DrawTimerText("WAIT");
+    }
+  }
+  else if (outboundTrainReady)
+  {
+    display.DrawTimerText("WAIT");
+  }
+  else
+  {
+    display.ClearTimer();
+  }
+}
+
+void updateDistantAspect(DistantAspect aspect)
+{
+  DistantAspect prevAspect = distantAspect;
+  distantAspect = aspect;
+  if (prevAspect != distantAspect && currentState == TS_departing && timerOutboundTransitMain.Completed())
+  {
+    showDistantSignal();
+  }
+}
+
+void showDistantSignal()
+{
+  display.DrawDistantSignal(distantAspect);
 }
 
 // Handle train ready on the outbound track departing when signal is cleared
@@ -265,14 +330,15 @@ void onTrainArriving()
 void sendEvent(ProducedEventEnum event)
 {
   String eventMsg = producedEvents[event].GetMessageString();
-  Serial.print("SENDING MESSAGE");
-  Serial.println(eventMsg);
+  //Serial.print("SENDING MESSAGE");
+  //Serial.println(eventMsg);
 
   if (client.connected())
   {
     client.println(eventMsg);
   }
 
+/*
   Serial.print("PRODUCED EVENT: ");
   switch (event)
   {
@@ -300,7 +366,7 @@ void sendEvent(ProducedEventEnum event)
     case PE_mainBlockClear:
       Serial.println("Main block CLEAR");
       break;
-  }
+  }*/
 }
 
 // Timer OnCompleted callbacks
@@ -325,12 +391,13 @@ void completedOutboundEnterMain(Timer& timer)
 }
 void completedOutboundTransitMain(Timer& timer)
 {
-  Serial.println("OUTBOUND CAN NOW DEPART");
+  showDistantSignal();
 }
 void completedOutboundExitMain(Timer& timer)
 {
   sendEvent(PE_mainBlockClear);
   currentState = TS_idle;
+  display.DrawStopSign();
 }
 void completedInboundTransitMain(Timer& timer)
 {
