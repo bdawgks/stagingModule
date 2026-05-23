@@ -5,6 +5,19 @@
 
 #include <WiFi.h>
 
+#define PIN_RDY_LED   D2
+#define PIN_RDY_BTN   D3
+#define PIN_BUZZER    D4
+#define PIN_SENSOR    A1
+
+enum LEDPhase
+{
+  LED_Off,
+  LED_On,
+  LED_FlashOn,
+  LED_FlashOff
+};
+
 enum TransitState
 {
   TS_idle,
@@ -24,6 +37,10 @@ enum ProducedEventEnum
   PE_mainBlockClear
 };
 
+LEDPhase readyLEDphase;
+int readyButtonValue;
+int buzzerBeats = 0;
+
 ProducedEvent producedEvents[8];
 ConsumedEvent outSignalClearEvent(G_Event_OutSignalClear);
 ConsumedEvent outSignalStopEvent(G_Event_OutSignalStop);
@@ -40,6 +57,7 @@ bool outboundTrainReady = false;
 bool inboundSignalClear = false;
 bool outboundSignalClear = false;
 bool trainWaitingAtInboundSignal = false;
+bool outboundReadyBlocked = false;
 
 // Timers for departure
 Timer timerOutboundDepartureReady(G_TimeDepartureReady);
@@ -58,14 +76,21 @@ Timer timerInboundEnterInBlock(G_TimeTransitSwitchBlock);
 Timer timerInboundExitSwitch(G_TimeTransitSwitchBlock + G_TimeBlockExit);
 Timer timerInboundExitInBlock(G_TimeTransitInboundBlock + G_TimeBlockExit);
 
+// Misc timers
+Timer timerReadyLED(G_TimeLEDBlink);
+Timer timerBuzzerOn(G_TimeBuzzerOn);
+Timer timerBuzzerDelay(G_TimeBuzzerDelay);
+Timer timerSensor(G_SensorMinTime);
+
 Timer* allTimers[] =
 {
   &timerOutboundDepartureReady, &timerOutboundEnterSwitch, &timerOutboundExitOutBlock, &timerOutboundEnterMain, &timerOutboundExitSwitch,
   &timerOutboundTransitMain, &timerOutboundExitMain,
   &timerInboundTransitMain, &timerInboundEnterSwitch, &timerInboundExitMain, &timerInboundEnterInBlock, &timerInboundExitSwitch,
-  &timerInboundExitInBlock
+  &timerInboundExitInBlock,
+  &timerReadyLED, &timerBuzzerOn, &timerBuzzerDelay, &timerSensor
 };
-int numTimers = 13;
+int numTimers = 17;
 
 // Display
 Display display;
@@ -75,6 +100,10 @@ WiFiClient client;
 
 void setup() 
 {
+  pinMode(PIN_RDY_LED, OUTPUT);
+  pinMode(PIN_RDY_BTN, INPUT_PULLUP);
+  pinMode(PIN_BUZZER, OUTPUT);
+
   display.Init();
 
   Serial.begin(115200);
@@ -125,10 +154,41 @@ void initTimers()
   timerInboundEnterInBlock.OnCompleted(completedInboundEnterInBlock);
   timerInboundExitSwitch.OnCompleted(completedInboundExitSwitch);
   timerInboundExitInBlock.OnCompleted(completedInboundExitInBlock);
+
+  timerReadyLED.OnCompleted(completedReadyLED);
+  timerReadyLED.Start();
+
+  timerBuzzerOn.OnCompleted(completedBuzzerOn);
+  timerBuzzerDelay.OnCompleted(completedBuzzerDelay);
+
+  timerSensor.OnCompleted(completedSensor);
 }
 
 void loop() 
 {
+  if (analogRead(PIN_SENSOR) < G_SensorThreshold)
+  {
+    if (!timerSensor.IsRunning())
+      timerSensor.Start();
+  }
+  else
+  {
+    if (timerSensor.IsRunning())
+      timerSensor.Reset();
+  }
+
+  if (digitalRead(PIN_RDY_BTN) != readyButtonValue)
+  {
+    readyButtonValue = digitalRead(PIN_RDY_BTN);
+    if (readyButtonValue == LOW)
+      setDepartureReady(!outboundTrainReady);
+  }
+
+  if (readyLEDphase == LED_On || readyLEDphase == LED_FlashOn)
+    digitalWrite(PIN_RDY_LED, HIGH);
+  else
+    digitalWrite(PIN_RDY_LED, LOW);
+
   clientRead();
 
   simulate(100);
@@ -160,13 +220,20 @@ void loop()
   }
 }
 
+void startBuzzer(bool restart = false)
+{
+  if (restart)
+    buzzerBeats = G_DepartBuzzerBeats;
+
+  tone(PIN_BUZZER, G_BuzzerTone);
+  timerBuzzerOn.Restart();
+}
+
 void clientRead()
 {
   if (client.available()) 
   {
     String data = client.readStringUntil('\r');
-    //Serial.print("Reading network data: ");
-    //Serial.println(data);
 
     if (outSignalClearEvent.IsInMessage(data))
     {
@@ -262,13 +329,14 @@ void showDistantSignal()
 // Handle train ready on the outbound track departing when signal is cleared
 void checkDeparture()
 {
-  if (currentState == TS_idle && timerOutboundDepartureReady.Completed() && outboundSignalClear)
+  if (currentState == TS_idle && outboundTrainReady && timerOutboundDepartureReady.Completed() && outboundSignalClear)
   {
     outboundTrainReady = false;
     currentState = TS_departing;
-    Serial.println("NEW STATE: TS_departing");
     timerOutboundEnterSwitch.Restart();
     timerOutboundExitOutBlock.Restart();
+    readyLEDphase = LED_FlashOff;
+    outboundReadyBlocked = true;
   }
 }
 
@@ -302,15 +370,21 @@ void setArrivalSignal(bool isClear)
 
 void setDepartureReady(bool isReady)
 {
+  if (outboundReadyBlocked)
+    return;
+
   outboundTrainReady = isReady;
   if (outboundTrainReady)
   {
     timerOutboundDepartureReady.Restart();
     sendEvent(PE_outBlockOccupied);
+    readyLEDphase = LED_On;
   }
   else
   {
+    timerOutboundDepartureReady.Reset();
     sendEvent(PE_outBlockClear);
+    readyLEDphase = LED_Off;
   }
 }
 
@@ -322,6 +396,9 @@ void onTrainDeparted()
 
 void onTrainArriving()
 {
+  if (currentState != TS_idle)
+    return;
+
   currentState = TS_arriving;
   sendEvent(PE_mainBlockOccupied);
   timerInboundTransitMain.Restart();
@@ -330,43 +407,11 @@ void onTrainArriving()
 void sendEvent(ProducedEventEnum event)
 {
   String eventMsg = producedEvents[event].GetMessageString();
-  //Serial.print("SENDING MESSAGE");
-  //Serial.println(eventMsg);
 
   if (client.connected())
   {
     client.println(eventMsg);
   }
-
-/*
-  Serial.print("PRODUCED EVENT: ");
-  switch (event)
-  {
-    case PE_outBlockOccupied:
-      Serial.println("out block OCCUPIED");
-      break;
-    case PE_outBlockClear:
-      Serial.println("out block CLEAR");
-      break;
-    case PE_inBlockOccupied:
-      Serial.println("in block OCCUPIED");
-      break;
-    case PE_inBlockClear:
-      Serial.println("in block CLEAR");
-      break;
-    case PE_switchBlockOccupied:
-      Serial.println("switch block OCCUPIED");
-      break;
-    case PE_switchBlockClear:
-      Serial.println("switch block CLEAR");
-      break;
-    case PE_mainBlockOccupied:
-      Serial.println("Main block OCCUPIED");
-      break;
-    case PE_mainBlockClear:
-      Serial.println("Main block CLEAR");
-      break;
-  }*/
 }
 
 // Timer OnCompleted callbacks
@@ -392,12 +437,16 @@ void completedOutboundEnterMain(Timer& timer)
 void completedOutboundTransitMain(Timer& timer)
 {
   showDistantSignal();
+  startBuzzer(true);
 }
 void completedOutboundExitMain(Timer& timer)
 {
   sendEvent(PE_mainBlockClear);
+  timerOutboundTransitMain.Reset();
   currentState = TS_idle;
   display.DrawStopSign();
+  outboundReadyBlocked = false;
+  readyLEDphase = LED_Off;
 }
 void completedInboundTransitMain(Timer& timer)
 {
@@ -431,4 +480,29 @@ void completedInboundExitSwitch(Timer& timer)
 void completedInboundExitInBlock(Timer& timer)
 {
   sendEvent(PE_inBlockClear);
+}
+void completedReadyLED(Timer& timer)
+{
+  if (readyLEDphase == LED_FlashOn)
+    readyLEDphase = LED_FlashOff;
+  else if (readyLEDphase == LED_FlashOff)
+    readyLEDphase = LED_FlashOn;
+
+  timer.Restart();
+}
+void completedBuzzerOn(Timer& timer)
+{
+  buzzerBeats--;
+  noTone(PIN_BUZZER);
+  timerBuzzerDelay.Restart();
+}
+void completedBuzzerDelay(Timer& timer)
+{
+  if (buzzerBeats > 0)
+    startBuzzer();
+}
+void completedSensor(Timer& timer)
+{
+  onTrainArriving();
+  timer.Reset();
 }

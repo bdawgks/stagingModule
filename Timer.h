@@ -24,7 +24,7 @@ public:
 
   bool Completed() { return _time <= 0.f; }
 
-  void Reset() { _time = _startTime; }
+  void Reset() { Stop(); _time = _startTime; }
 
   void Restart()
   {
