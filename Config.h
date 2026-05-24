@@ -1,3 +1,6 @@
+#include <SPI.h>
+#include <SD.h>
+
 struct NetworkSettings
 {
   const char* name = "Sarntalbahn";
@@ -55,6 +58,110 @@ struct ConfigSettings
   HardwareSettings hardware;
   SimulationSettings simulation;
   LCCSettings lcc;
+
+  void ReadFromSD(String path)
+  {
+    if (!SD.exists(path))
+      return;
+
+    File cfgFile = SD.open(path);
+    if (cfgFile)
+    {
+      String param;
+      String value;
+      bool readValue = false;
+      while (cfgFile.available())
+      {
+        char c = cfgFile.read();
+        if (c == '=')
+          readValue = true;
+        else if (c == ';')
+        {
+          param.trim();
+          value.trim();
+          Parse(param, value);
+        }
+        else
+        {
+          if (readValue)
+            value += c;
+          else
+            param += c;
+        }
+      }
+
+      cfgFile.close();
+    }
+  }
+
+private:
+  void AssignString(const char*& par, String value)
+  {
+    par = value.c_str();
+  }
+  void ParseInt(int& par, String value)
+  {
+    par = value.toInt();
+  }
+  void ParseFloat(float& par, String value)
+  {
+    par = value.toFloat();
+  }
+
+  void Parse(String param, String value)
+  {
+    #define QUOTE(seq) #seq
+    #define PARSEF(func, par) \
+      Serial.print(param); \
+      Serial.print("=="); \
+      Serial.println(QUOTE(par)); \
+      if (param == QUOTE(par)) \
+        func(par, value);
+
+    #define PARSEINT(par) \
+      if (param == QUOTE(par)) \
+      { \
+        int v = par; \
+        ParseInt(v, value); \
+        par = v; \
+      }
+  
+    PARSEF(AssignString, network.name)
+    PARSEF(AssignString, network.password)
+    PARSEF(AssignString, network.hostAddress)
+    PARSEINT(network.hostPort)
+    PARSEF(ParseFloat, hardware.timeLEDBlink)
+    PARSEF(ParseFloat, hardware.timeBuzzerOn)
+    PARSEF(ParseFloat, hardware.timeBuzzerDelay)
+    PARSEF(ParseFloat, hardware.sensorMinTime)
+    PARSEF(ParseInt, hardware.departBuzzerBeats)
+    PARSEF(ParseInt, hardware.buzzerTone)
+    PARSEF(ParseInt, hardware.sensorThreshold)
+    PARSEINT(simulation.clockRate)
+    PARSEF(ParseFloat, simulation.timeDepartureReady)
+    PARSEF(ParseFloat, simulation.timeTransitMainline)
+    PARSEF(ParseFloat, simulation.timeTransitOutboundBlock)
+    PARSEF(ParseFloat, simulation.timeTransitInboundBlock)
+    PARSEF(ParseFloat, simulation.timeTransitSwitchBlock)
+    PARSEF(ParseFloat, simulation.timeBlockExit)
+    PARSEF(AssignString, lcc.event_outSignalClear)
+    PARSEF(AssignString, lcc.event_outSignalStop)
+    PARSEF(AssignString, lcc.event_inSignalClear)
+    PARSEF(AssignString, lcc.event_inSignalStop)
+    PARSEF(AssignString, lcc.event_blockMainOccupied)
+    PARSEF(AssignString, lcc.event_blockMainClear)
+    PARSEF(AssignString, lcc.event_blockSwitchOccupied)
+    PARSEF(AssignString, lcc.event_blockSwitchClear)
+    PARSEF(AssignString, lcc.event_blockOutOccupied)
+    PARSEF(AssignString, lcc.event_blockOutClear)
+    PARSEF(AssignString, lcc.event_blockInOccupied)
+    PARSEF(AssignString, lcc.event_blockInClear)
+    PARSEF(AssignString, lcc.event_actualBlockEntered)
+    PARSEF(AssignString, lcc.event_distSigAspectStop)
+    PARSEF(AssignString, lcc.event_distSigAspectClear1)
+    PARSEF(AssignString, lcc.event_distSigAspectClear2)
+    PARSEF(AssignString, lcc.sourceAlias)
+  }
 };
 
 ConfigSettings G_Config;

@@ -4,11 +4,11 @@
 #include "Display.h"
 
 #include <WiFi.h>
-#include <SD.h>
 
 #define PIN_RDY_LED   D2
 #define PIN_RDY_BTN   D3
 #define PIN_BUZZER    D4
+#define PIN_SDCS      D5
 #define PIN_SENSOR    A1
 
 enum LEDPhase
@@ -102,15 +102,16 @@ void setup()
   pinMode(PIN_RDY_LED, OUTPUT);
   pinMode(PIN_RDY_BTN, INPUT_PULLUP);
   pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_SDCS, OUTPUT);
 
   Serial.begin(115200);
 
-  if (SD.begin(10))
-  {
-    Serial.println("FOUND CARD");
-  }
-
   display.Init();
+
+  if (SD.begin(PIN_SDCS))
+  {
+    G_Config.ReadFromSD("/setup.cfg");
+  }
   
   // Establish WiFi connection
   Serial.println("Connecting:");
@@ -431,6 +432,8 @@ void onTrainArriving()
 {
   if (currentState != TS_idle)
     return;
+
+  Serial.println("train arrival tripped");
 
   currentState = TS_arriving;
   sendEvent(PE_mainBlockOccupied);
