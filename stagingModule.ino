@@ -4,6 +4,7 @@
 #include "Display.h"
 
 #include <WiFi.h>
+#include <SD.h>
 
 #define PIN_RDY_LED   D2
 #define PIN_RDY_BTN   D3
@@ -37,19 +38,25 @@ enum ProducedEventEnum
   PE_mainBlockClear
 };
 
+enum ConsumedEventEnum
+{
+  CE_UNRECOGNIZED,
+  CE_outSignalClearEvent,
+  CE_outSignalStopEvent,
+  CE_inSignalClearEvent,
+  CE_inSignalStopEvent,
+  CE_physicalBlockEnteredEvent,
+  CE_distantAspectStopEvent,
+  CE_distantAspectClear1Event,
+  CE_distantAspectClear2Event
+};
+
 LEDPhase readyLEDphase;
 int readyButtonValue;
 int buzzerBeats = 0;
 
 ProducedEvent producedEvents[8];
-ConsumedEvent outSignalClearEvent(G_Event_OutSignalClear);
-ConsumedEvent outSignalStopEvent(G_Event_OutSignalStop);
-ConsumedEvent inSignalClearEvent(G_Event_InSignalClear);
-ConsumedEvent inSignalStopEvent(G_Event_InSignalStop);
-ConsumedEvent physicalBlockEnteredEvent(G_Event_ActualBlockEntered);
-ConsumedEvent distantAspectStopEvent(G_Event_DistSigAspectStop);
-ConsumedEvent distantAspectClear1Event(G_Event_DistSigAspectClear1);
-ConsumedEvent distantAspectClear2Event(G_Event_DistSigAspectClear2);
+ConsumedEventMap<ConsumedEventEnum> consumedEvents(8, CE_UNRECOGNIZED);
 
 TransitState currentState = TS_idle;
 
@@ -59,38 +66,30 @@ bool outboundSignalClear = false;
 bool trainWaitingAtInboundSignal = false;
 bool outboundReadyBlocked = false;
 
+TimerList allTimers;
+
 // Timers for departure
-Timer timerOutboundDepartureReady(G_TimeDepartureReady);
-Timer timerOutboundEnterSwitch(G_TimeTransitOutboundBlock);
-Timer timerOutboundExitOutBlock(G_TimeTransitOutboundBlock + G_TimeBlockExit);
-Timer timerOutboundEnterMain(G_TimeTransitSwitchBlock);
-Timer timerOutboundExitSwitch(G_TimeTransitSwitchBlock + G_TimeBlockExit);
-Timer timerOutboundTransitMain(G_TimeTransitMainline / (float)G_ClockRate);
-Timer timerOutboundExitMain(G_TimeBlockExit);
+Timer timerOutboundDepartureReady(allTimers);
+Timer timerOutboundEnterSwitch(allTimers);
+Timer timerOutboundExitOutBlock(allTimers);
+Timer timerOutboundEnterMain(allTimers);
+Timer timerOutboundExitSwitch(allTimers);
+Timer timerOutboundTransitMain(allTimers); 
+Timer timerOutboundExitMain(allTimers);
 
 // Timers for arrival
-Timer timerInboundTransitMain(G_TimeTransitMainline / (float)G_ClockRate);
-Timer timerInboundEnterSwitch(G_TimeDepartureReady);
-Timer timerInboundExitMain(G_TimeBlockExit);
-Timer timerInboundEnterInBlock(G_TimeTransitSwitchBlock);
-Timer timerInboundExitSwitch(G_TimeTransitSwitchBlock + G_TimeBlockExit);
-Timer timerInboundExitInBlock(G_TimeTransitInboundBlock + G_TimeBlockExit);
+Timer timerInboundTransitMain(allTimers);
+Timer timerInboundEnterSwitch(allTimers);
+Timer timerInboundExitMain(allTimers);
+Timer timerInboundEnterInBlock(allTimers);
+Timer timerInboundExitSwitch(allTimers);
+Timer timerInboundExitInBlock(allTimers);
 
 // Misc timers
-Timer timerReadyLED(G_TimeLEDBlink);
-Timer timerBuzzerOn(G_TimeBuzzerOn);
-Timer timerBuzzerDelay(G_TimeBuzzerDelay);
-Timer timerSensor(G_SensorMinTime);
-
-Timer* allTimers[] =
-{
-  &timerOutboundDepartureReady, &timerOutboundEnterSwitch, &timerOutboundExitOutBlock, &timerOutboundEnterMain, &timerOutboundExitSwitch,
-  &timerOutboundTransitMain, &timerOutboundExitMain,
-  &timerInboundTransitMain, &timerInboundEnterSwitch, &timerInboundExitMain, &timerInboundEnterInBlock, &timerInboundExitSwitch,
-  &timerInboundExitInBlock,
-  &timerReadyLED, &timerBuzzerOn, &timerBuzzerDelay, &timerSensor
-};
-int numTimers = 17;
+Timer timerReadyLED(allTimers);
+Timer timerBuzzerOn(allTimers);
+Timer timerBuzzerDelay(allTimers);
+Timer timerSensor(allTimers);
 
 // Display
 Display display;
@@ -104,14 +103,19 @@ void setup()
   pinMode(PIN_RDY_BTN, INPUT_PULLUP);
   pinMode(PIN_BUZZER, OUTPUT);
 
-  display.Init();
-
   Serial.begin(115200);
+
+  if (SD.begin(10))
+  {
+    Serial.println("FOUND CARD");
+  }
+
+  display.Init();
   
   // Establish WiFi connection
   Serial.println("Connecting:");
 
-  WiFi.begin(G_NetworkName, G_NetworkPW);
+  WiFi.begin(G_Config.network.name, G_Config.network.password);
   while (WiFi.status() != WL_CONNECTED) 
   {
     delay(500);
@@ -120,27 +124,59 @@ void setup()
   Serial.println("\nConnected to network");
 
   
-  if (client.connect(G_CSIP, G_Port))
+  if (client.connect(G_Config.network.hostAddress, G_Config.network.hostPort))
   {
     Serial.println("Connected to host");
   }
 
   initTimers();
 
-  producedEvents[PE_outBlockOccupied].Init(G_Event_BlockOutOccupied, G_LCC_SourceAlias);
-  producedEvents[PE_outBlockClear].Init(G_Event_BlockOutClear, G_LCC_SourceAlias);
-  producedEvents[PE_inBlockOccupied].Init(G_Event_BlockInOccupied, G_LCC_SourceAlias);
-  producedEvents[PE_inBlockClear].Init(G_Event_BlockInClear, G_LCC_SourceAlias);
-  producedEvents[PE_switchBlockOccupied].Init(G_Event_BlockSwitchOccupied, G_LCC_SourceAlias);
-  producedEvents[PE_switchBlockClear].Init(G_Event_BlockSwitchClear, G_LCC_SourceAlias);
-  producedEvents[PE_mainBlockOccupied].Init(G_Event_BlockMainOccupied, G_LCC_SourceAlias);
-  producedEvents[PE_mainBlockClear].Init(G_Event_BlockMainClear, G_LCC_SourceAlias);
+  producedEvents[PE_outBlockOccupied].Init(G_Config.lcc.event_blockOutOccupied, G_Config.lcc.sourceAlias);
+  producedEvents[PE_outBlockClear].Init(G_Config.lcc.event_blockOutClear, G_Config.lcc.sourceAlias);
+  producedEvents[PE_inBlockOccupied].Init(G_Config.lcc.event_blockInOccupied, G_Config.lcc.sourceAlias);
+  producedEvents[PE_inBlockClear].Init(G_Config.lcc.event_blockInClear, G_Config.lcc.sourceAlias);
+  producedEvents[PE_switchBlockOccupied].Init(G_Config.lcc.event_blockSwitchOccupied, G_Config.lcc.sourceAlias);
+  producedEvents[PE_switchBlockClear].Init(G_Config.lcc.event_blockSwitchClear, G_Config.lcc.sourceAlias);
+  producedEvents[PE_mainBlockOccupied].Init(G_Config.lcc.event_blockMainOccupied, G_Config.lcc.sourceAlias);
+  producedEvents[PE_mainBlockClear].Init(G_Config.lcc.event_blockMainClear, G_Config.lcc.sourceAlias);
+  
+  consumedEvents.Assign(G_Config.lcc.event_outSignalClear, CE_outSignalClearEvent);
+  consumedEvents.Assign(G_Config.lcc.event_outSignalStop, CE_outSignalStopEvent);
+  consumedEvents.Assign(G_Config.lcc.event_inSignalClear, CE_inSignalClearEvent);
+  consumedEvents.Assign(G_Config.lcc.event_inSignalStop, CE_inSignalStopEvent);
+  consumedEvents.Assign(G_Config.lcc.event_actualBlockEntered, CE_physicalBlockEnteredEvent);
+  consumedEvents.Assign(G_Config.lcc.event_distSigAspectStop, CE_distantAspectStopEvent);
+  consumedEvents.Assign(G_Config.lcc.event_distSigAspectClear1, CE_distantAspectClear1Event);
+  consumedEvents.Assign(G_Config.lcc.event_distSigAspectClear2, CE_distantAspectClear2Event);
 
   display.DrawStopSign();
 }
 
 void initTimers()
 {
+  // Timers for departure
+  timerOutboundDepartureReady.Init(G_Config.simulation.timeDepartureReady);
+  timerOutboundEnterSwitch.Init(G_Config.simulation.timeTransitOutboundBlock);
+  timerOutboundExitOutBlock.Init(G_Config.simulation.timeTransitOutboundBlock + G_Config.simulation.timeBlockExit);
+  timerOutboundEnterMain.Init(G_Config.simulation.timeTransitSwitchBlock);
+  timerOutboundExitSwitch.Init(G_Config.simulation.timeTransitSwitchBlock + G_Config.simulation.timeBlockExit);
+  timerOutboundTransitMain.Init(G_Config.simulation.timeTransitMainline / (float)G_Config.simulation.clockRate);
+  timerOutboundExitMain.Init(G_Config.simulation.timeBlockExit);
+
+  // Timers for arrival
+  timerInboundTransitMain.Init(G_Config.simulation.timeTransitMainline / (float)G_Config.simulation.clockRate);
+  timerInboundEnterSwitch.Init(G_Config.simulation.timeDepartureReady);
+  timerInboundExitMain.Init(G_Config.simulation.timeBlockExit);
+  timerInboundEnterInBlock.Init(G_Config.simulation.timeTransitSwitchBlock);
+  timerInboundExitSwitch.Init(G_Config.simulation.timeTransitSwitchBlock + G_Config.simulation.timeBlockExit);
+  timerInboundExitInBlock.Init(G_Config.simulation.timeTransitInboundBlock + G_Config.simulation.timeBlockExit);
+
+  // Misc timers
+  timerReadyLED.Init(G_Config.hardware.timeLEDBlink);
+  timerBuzzerOn.Init(G_Config.hardware.timeBuzzerOn);
+  timerBuzzerDelay.Init(G_Config.hardware.timeBuzzerDelay);
+  timerSensor.Init(G_Config.hardware.sensorMinTime);
+
   timerOutboundExitOutBlock.OnCompleted(completedOutboundExitOutBlock);
   timerOutboundEnterSwitch.OnCompleted(completedOutboundEnterSwitch);
   timerOutboundExitSwitch.OnCompleted(completedOutboundExitSwitch);
@@ -166,7 +202,7 @@ void initTimers()
 
 void loop() 
 {
-  if (analogRead(PIN_SENSOR) < G_SensorThreshold)
+  if (analogRead(PIN_SENSOR) < G_Config.hardware.sensorThreshold)
   {
     if (!timerSensor.IsRunning())
       timerSensor.Start();
@@ -223,9 +259,9 @@ void loop()
 void startBuzzer(bool restart = false)
 {
   if (restart)
-    buzzerBeats = G_DepartBuzzerBeats;
+    buzzerBeats = G_Config.hardware.departBuzzerBeats;
 
-  tone(PIN_BUZZER, G_BuzzerTone);
+  tone(PIN_BUZZER, G_Config.hardware.buzzerTone);
   timerBuzzerOn.Restart();
 }
 
@@ -235,37 +271,33 @@ void clientRead()
   {
     String data = client.readStringUntil('\r');
 
-    if (outSignalClearEvent.IsInMessage(data))
+    ConsumedEventEnum eventType = consumedEvents.GetValue(data);
+    switch (eventType)
     {
-      setDepartureSignal(true);
-    }
-    else if (outSignalStopEvent.IsInMessage(data))
-    {
-      setDepartureSignal(false);
-    }
-    else if (inSignalClearEvent.IsInMessage(data))
-    {
-      setArrivalSignal(true);
-    }
-    else if (inSignalStopEvent.IsInMessage(data))
-    {
-      setArrivalSignal(false);
-    }
-    else if (physicalBlockEnteredEvent.IsInMessage(data))
-    {
-      onTrainDeparted();
-    }
-    else if (distantAspectStopEvent.IsInMessage(data))
-    {
-      updateDistantAspect(DA_Caution);
-    }
-    else if (distantAspectClear1Event.IsInMessage(data))
-    {
-      updateDistantAspect(DA_Clear1);
-    }
-    else if (distantAspectClear2Event.IsInMessage(data))
-    {
-      updateDistantAspect(DA_Clear2);
+      case CE_outSignalClearEvent:
+        setDepartureSignal(true);
+        break;
+      case CE_outSignalStopEvent:
+        setDepartureSignal(false);
+        break;
+      case CE_inSignalClearEvent:
+        setArrivalSignal(true);
+        break;
+      case CE_inSignalStopEvent:
+        setArrivalSignal(false);
+        break;
+      case CE_physicalBlockEnteredEvent:
+        onTrainDeparted();
+        break;
+      case CE_distantAspectStopEvent:
+        updateDistantAspect(DA_Caution);
+        break;
+      case CE_distantAspectClear1Event:
+        updateDistantAspect(DA_Clear1);
+        break;
+      case CE_distantAspectClear2Event:
+        updateDistantAspect(DA_Clear2);
+        break;
     }
   }
 }
@@ -279,9 +311,10 @@ void simulate(int ms)
 
   // Update timers
   float seconds = (float)ms / 1000.f;
-  for (int i = 0; i < numTimers; i++)
+  TimerList::Iter iterator = allTimers.GetIterator();
+  while(iterator.Iterate())
   {
-    allTimers[i]->Update(seconds);
+    iterator.Get()->Update(seconds);
   }
 
   // Show outbound timer on display
