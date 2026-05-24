@@ -1,7 +1,23 @@
+#include "NodeList.h"
+
+class Timer;
+
+typedef NodeList<Timer> TimerList;
+
 class Timer
 {
 public:
+  Timer(TimerList& list)
+  {
+    list.Add(*this);
+  }
+
   Timer(float startTime)
+  {
+    Init(startTime);
+  }
+
+  void Init(float startTime)
   {
     _time = _startTime = startTime;
   }

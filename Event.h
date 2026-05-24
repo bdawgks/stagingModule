@@ -44,7 +44,7 @@ private:
 class ConsumedEvent
 {
 public:
-  ConsumedEvent(const char* event)
+  void Init(const char* event)
   {
     _cmpStr = Event::GetStringValue(event);
   }
@@ -54,17 +54,49 @@ public:
     String headerStr = msgStr.substring(0, 7);
     String eventStr = msgStr.substring(11, 27);
 
-    /*Serial.println("COMPARING MSG STRINGS");
-    Serial.print("header - ");
-    Serial.println(headerStr);
-    Serial.print("event - ");
-    Serial.println(eventStr);
-    Serial.print("cmpStr - ");
-    Serial.println(_cmpStr);*/
-
     return (headerStr == ":X195B4" && eventStr == _cmpStr);
   }
 
 private:
   String _cmpStr;
+};
+
+template <typename E>
+class ConsumedEventMap
+{
+public:
+  ConsumedEventMap(int size, E undefined) : _size(size), _undefined(undefined)
+  {
+    _values = new E[size];
+    _events = new ConsumedEvent[size];
+  }
+
+  void Assign(const char* event, E value)
+  {
+    if (_nextIdx >= _size)
+      return;
+
+    _events[_nextIdx].Init(event);
+    _values[_nextIdx] = value;
+
+    _nextIdx++;
+  }
+
+  E GetValue(String data)
+  {
+    for (int i = 0; i < _nextIdx; i++)
+    {
+      if (_events[i].IsInMessage(data))
+        return _values[i];
+    }
+
+    return _undefined;
+  }
+
+private:
+  int _size;
+  int _nextIdx = 0;
+  E* _values;
+  ConsumedEvent* _events;
+  E _undefined;
 };

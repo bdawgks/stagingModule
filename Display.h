@@ -1,8 +1,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 
-//#include <Fonts/FreeSans9pt7b.h>
-
 #define SCREEN_PRODUCT_ID 2090
 
 #define TFT_CS  D10
@@ -34,7 +32,6 @@ public:
     _display.begin();
     _display.setSPISpeed(40000000);
     _display.fillScreen(0);
- //   _display.setFont(&FreeSans9pt7b);
   }
 
   void DrawStopSign()
