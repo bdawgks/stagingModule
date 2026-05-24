@@ -13,6 +13,16 @@ const float G_TimeTransitInboundBlock = 5.f;
 const float G_TimeTransitSwitchBlock = 5.f;
 const float G_TimeBlockExit = 5.f;
 
+// Hardware params
+const float G_TimeLEDBlink = 0.2f;
+const float G_TimeBuzzerOn = 0.4f;
+const float G_TimeBuzzerDelay = 0.2f;
+const float G_SensorMinTime = 0.1f;
+int G_DepartBuzzerBeats = 2;
+int G_BuzzerTone = 1500;
+int G_SensorThreshold = 30;
+
+
 // LCC Event IDs
 const char* G_Event_OutSignalClear = "55.BB.00.11.22.33.00.00";
 const char* G_Event_OutSignalStop = "55.BB.00.11.22.33.00.01";
